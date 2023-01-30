@@ -6,7 +6,7 @@ Zero To Snowflake JPMC Day 1:
 2. Cost Financial Governance
 
 
-Zero to SF Day 2: 
+HOW SNOWFLAKE WORKS… for JPMC- Day 2: 
 3. Optimized Data Transformation
     Loading Data Manually by file
     Streaming Data using Streams/ tasks Continuous
@@ -37,6 +37,7 @@ USE ROLE ACCOUNTADMIN;
 -- **   2.1 Virtual Warehouses & Settings
 --      2.2 Resource monitors
 -- Fraction of 1 second (12 times)
+ALTER SESSION SET QUERY_TAG = 'Financial Cost Governance';
 CREATE OR REPLACE WAREHOUSE COSTCENTER_ESG_TEST WITH 
     WAREHOUSE_SIZE = 'XSMALL' WAREHOUSE_TYPE = 'STANDARD' AUTO_SUSPEND = 600 INITIALLY_SUSPENDED = TRUE RESOURCE_MONITOR = JPMC_JADE_MONITOR AUTO_RESUME = TRUE 
     MIN_CLUSTER_COUNT = 1 MAX_CLUSTER_COUNT = 1 SCALING_POLICY = 'STANDARD' ;
@@ -83,11 +84,13 @@ SET statement_timeout_in_seconds = 1800; -- 1800 seconds = 30 minutes
 -- what do these files look like within the blob storage?
 -- ** Stage Pointer to the S3 Buckets ... 
 
+ALTER SESSION SET QUERY_TAG = 'Optimized Data Transformation';
 LIST @frostbyte_esg.public.portfolio_data_stage/json/;
 select count(distinct METADATA$FILENAME) from @frostbyte_esg.public.portfolio_data_stage/json/;
 
 
 -- what do the contents of these Daily Portfolio holdings files look like?
+-- show it on the right
 SELECT TOP 5 $1
 FROM @frostbyte_esg.public.portfolio_data_stage/json
     (FILE_FORMAT=>frostbyte_esg.public.json_ff);
@@ -99,6 +102,8 @@ FROM @frostbyte_esg.public.portfolio_data_stage/json
         ---*/  
 
 -- create a daily_portfolio_positions table with a VARIANT column to load our JSON into
+-- So important to extend Ansi SQL to handle semi-structure
+
 CREATE OR REPLACE TABLE daily_portfolio_positions (obj variant);
 -- CREATE OR REPLACE TABLE frostbyte_esg.raw_.daily_portfolio_positions (obj variant);
 
@@ -106,7 +111,7 @@ CREATE OR REPLACE TABLE daily_portfolio_positions (obj variant);
 ALTER WAREHOUSE COSTCENTER_ESG_TEST SET warehouse_size = 'Medium';
 
 -- *****************************
--- 3a. Loading Data Manually by file
+-- 3.1 Loading Data Manually by file
 
 -- ingest all of our portfolio holdings files into our newly created daily portfolio positions table
 -- https://docs.snowflake.com/en/sql-reference/sql/copy-into-table.html
@@ -122,10 +127,11 @@ SELECT COUNT (*) FROM daily_portfolio_positions;
 ALTER WAREHOUSE COSTCENTER_ESG_TEST SUSPEND; 
 ALTER WAREHOUSE COSTCENTER_ESG_TEST SET warehouse_size = 'XSmall';
 show warehouses like 'cost%';
---
+-- Look how easy it was to load the semi-structured data without ELT pipelines 
 --************************
 -- 3.2. Streaming Data using Streams/ tasks - continuous ingestion 
 -- data can be brought in using external tables and tasks stream and pipes - as it was on this sheet- https://app.snowflake.com/us-east-1/coa26304/w40NO20SLzVV#query
+
 --create stage for trips
 -- DON'T RUN - not doing Trips Streaming 
     create or replace stage pipe_data_trips url = 's3://snowflake-workshop-lab/snowpipe/trips/' file_format=(type=csv);
@@ -140,39 +146,27 @@ show warehouses like 'cost%';
     select system$pipe_status('trips_pipe');
 
 
-
-/*----------------------------------------------------------------------------------
-Step 2 - 
- With our JSON files loaded, let's now take a look at the data in our table and
- leverage Snowflake's dot notation to flatten to object data into legible columns
- and create a view for downstream usage
-----------------------------------------------------------------------------------*/
 -- **********************************************************
 -- ** 4. Optimize Performance
 
 -- what does the data look like in our daily_portfolio_positions table?
 
-SELECT 
-    TOP 50 * 
-FROM daily_portfolio_positions;
-
-        /*---
-         feature note: Snowflake supports SQL queries that access semi-structured data using
-          special operators and functions. Individual elements in a VARIANT column can be 
-          accessed using dot or bracket notation
-        ---*/  
-
--- Larger query 3 tables one is SNOWFLAKE_SAMPLE_DATA.TPCDS_SF10TCL.
+ALTER SESSION SET QUERY_TAG = 'Optimize Performance';
+ALTER WAREHOUSE COSTCENTER_ESG_TEST SUSPEND; 
+ALTER WAREHOUSE COSTCENTER_ESG_TEST SET warehouse_size = 'XSmall';
+show warehouses like 'cost%';
+-- 7.19B sample file - Transaction Processing Performance Council (TPC) - 10 TB
+-- https://docs.snowflake.com/en/user-guide/sample-data-tpcds.html
 select count(*) from SNOWFLAKE_SAMPLE_DATA.TPCDS_SF10TCL.web_sales;
 select count(*) from SNOWFLAKE_SAMPLE_DATA.TPCDS_SF10TCL.item;
 
 
 -- **********************************************************
---    4.1 Showing a Query plan and result 
+--    4.1 Showing a Query plan and result XS warehouse
 
--- result -cold - <6 sec  4x
----       -warm <2 sec.   4x  -- already scanned data is read. 
----       -hot < .15 sec   4x
+-- result -cold - <6.4 sec  5x
+---       -warm <2 sec.   5x  -- already scanned data is read. 
+---       -hot < .15 sec   5x
 --- *** TD: FS query 
 --- *** Modify to show it going faster - inner order by. 
 
@@ -201,9 +195,23 @@ ALTER SESSION SET USE_CACHED_RESULT = true;   -- Hot
 
 
 
+-- **********************
+-- ** 5. Data Engineering 
+ALTER SESSION SET QUERY_TAG = 'Data Engineering';
 
--- ** 5. ELT and Data Engineering 
+
+SELECT 
+    TOP 50 * 
+FROM daily_portfolio_positions;
+
+        /*---
+         feature note: Snowflake supports SQL queries that access semi-structured data using
+          special operators and functions. Individual elements in a VARIANT column can be 
+          accessed using dot or bracket notation
+        ---*/  
+        
 -- let's use dot notation to flatten our results into legible columns for our flagship portfolio
+
 SELECT 
     obj:DATE::date AS date,
     obj:PORTFOLIO::string AS portfolio,
@@ -216,7 +224,7 @@ SELECT
 FROM daily_portfolio_positions dpp
 WHERE 1=1
     AND obj:PORTFOLIO = 'SnowCap Flagship Portfolio'
-ORDER BY obj:DATE DESC;
+ORDER BY obj:DATE DESC LIMIT 10;
 
 -- drop view frostbyte_esg.harmonized.daily_portfolio_positions_v;
 -- using the query above, let's create a harmonized view over the data
@@ -234,8 +242,6 @@ SELECT
 FROM
 daily_portfolio_positions dpp
 WHERE 1=1;
---use this if regular view
---ORDER BY obj:DATE DESC;
 
 
 -- leveraging our new view, what are our Tesla holdings over time against all portfolios?
@@ -251,30 +257,103 @@ WHERE 1=1
     AND ticker = 'TSLA'
 ORDER BY date DESC;
 
--- **5a. Generate some data (trade blotter) More on Trade blotter: https://app.snowflake.com/us-east-1/coa26304/w1MX9c9M150D#query
+-- **************************
+-- **5.1 Generate test data (trade blotter)
+-- DM's notes on Trade blotter: https://app.snowflake.com/us-east-1/coa26304/w1MX9c9M150D#query
+
 CREATE OR REPLACE TABLE Blotter (
    TDate DATE,
    TraderID INTEGER,
-   Proceeds INTEGER,
+   Proceeds decimal(20,2), 
+   Pro_US  decimal(20,2), 
+   Market STRING,
    Side STRING
 );
 
 -- Fill in Some data that is either 3 days old or 90-93 days old. 
 INSERT INTO Blotter
-    (Tdate,TraderID, Proceeds, Side)
+    (Tdate,TraderID, Proceeds, Market, Side)
 SELECT CURRENT_DATE() - (UNIFORM(0, 2, RANDOM() )+ 90 *(UNIFORM(0, 1, RANDOM() ))) AS Tdate,
     UNIFORM(1, 10, RANDOM() ) as TraderID,
-    UNIFORM(1, 100, RANDOM() ) as Proceeds,
+    UNIFORM(0::decimal(20,2), 100::decimal(20,2), RANDOM() ) as Proceeds,
+    get(array_construct('NYSE', 'NASDAQ', 'TSX'), uniform(0, 2, random())) AS Market, 
     get(array_construct('BUY', 'SELL', 'SHORT', 'COVER'), uniform(0, 3, random())) AS Side
-FROM TABLE(GENERATOR(rowcount => 100) ) ;
+FROM TABLE(GENERATOR(rowcount => 100) ) ; -- TSX =Toronto Stock Exchange
+--    
+--   
+-- ** Create a user defined function UDF for currency conversion- based on the location of the stock exchange
+-- UDF can be: SQL, JavaScript, Java, Python
+-- UDF python much more involved UDF is available demonstrating tokenizing values:
 
--- Order the trade blotter by date as it will be in practice
+-- Python UDF 
+-- Object viewable here: https://app.snowflake.com/us-east-1/coa26304/#/data/databases/JPMC/schemas/PUBLIC/user-function/PRO_US_P(VARCHAR)
+CREATE OR REPLACE FUNCTION Pro_US_p(Market Varchar)
+  RETURNS decimal(20,2)
+  Language python
+  runtime_version = '3.8'
+  handler = 'Pro_US_py'   -- switch isn't available 'til 3.10
+as
+$$
+def Pro_US_py(market_py: str):
+    if market_py== "TSX":
+        return 0.75
+    else: 
+        return 1.0
+$$
+;
+
+
+-- SQL UDF 
+CREATE OR REPLACE FUNCTION Pro_US(Market Varchar)
+RETURNS decimal(20,2)
+AS
+$$
+	SELECT
+		CASE
+			WHEN Market = 'TSX' THEN .75
+		ELSE 1.00
+	END
+$$
+;
+
+
+-- Apply the UDF for canadian $ currency translation, and Order the trade blotter by date as it will be in practice. This simulates how it be ordered in practice  
+-- To use the SQL UDF substitue the line: 
+--        Pro_US(MARKET)*PROCEEDS as Pro_US, 
 
 CREATE OR REPLACE TABLE Blotter AS
-    SELECT * FROM Blotter ORDER BY tdate ;
+    SELECT 
+        TDate ,
+        TraderID ,
+        Proceeds , 
+        Pro_US_p(MARKET)*PROCEEDS as Pro_US, 
+        Market,
+        Side 
+    FROM Blotter ORDER BY tdate ;
 SELECT COUNT (*) FROM Archival.Archival.Blotter;
 
-SELECT * FROM Blotter ;
+SELECT * FROM Blotter limit 15 ;
+
+/**************************************************************************
+Summary of everything completed on Day 2. 
+
+HOW SNOWFLAKE WORKS… for JPMC- Day 2: 
+3. Optimized Data Transformation
+    Loading Data Manually by file
+    Streaming Data using Streams/ tasks Continuous
+
+4. Optimize Performance
+    Showing a Query plan and result 
+    Caching - Run a cold query
+    Caching - Run a hot query
+    Activity-> History
+
+5. Data Engineering
+    Generate test data
+    User defined functions
+
+************************************************** */
+
 
 
 /*----------------------------------------------------------------------------------
@@ -287,7 +366,14 @@ Step 3 -
 ----------------------------------------------------------------------------------*/
 
 -- using ticker, join our newly created portfolio view with FactSet ESG and Market Data 
-SELECT 
+
+
+--***  BI - First scale up and turn up the timeout 
+--** 7. Business Intelligence 
+
+
+CREATE OR REPLACE TABLE ESG_Loaded AS
+    SELECT 
     dpp.date,
     dpp.portfolio,
     dpp.ticker,
@@ -301,13 +387,15 @@ FROM daily_portfolio_positions_v dpp
 JOIN frostbyte_esg.harmonized.factset_ticker_detail_daily tdd
     ON dpp.date = tdd.date
     AND dpp.ticker_region = tdd.ticker_region
-ORDER BY dpp.date DESC, dpp.portfolio;
+ORDER BY dpp.date DESC, dpp.portfolio LIMIT 20; 
 
+SELECT * FROM ESG_LOADED LIMIT 15;
 ALTER WAREHOUSE COSTCENTER_ESG_TEST SET WAREHOUSE_SIZE = 'MEDIUM' ; 
 
+-- Note the join was done in SF to reduce the compute in your BI environment
 
 --*** Now Show the BI - First scale up and turn up the timeout 
---** 7. Business Intelligence 
+
 --    7a. Visualization within a query 
 --    7b. Snowsight analytics: https://app.snowflake.com/us-east-1/coa26304/#/benchmarking-with-esg-dO9VQQ040
 
@@ -609,3 +697,4 @@ WHERE 1=1
 ORDER BY esg.harvested_at DESC, esg.entity_sentiment DESC;
 
 -- set up the BI tables
+
